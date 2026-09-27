@@ -86,7 +86,21 @@ def _run(command: str, cwd: str, env: dict[str, str], timeout: int) -> subproces
     try:
         stdout, _ = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL) if os.name == "posix" else process.kill()
-        stdout, _ = process.communicate()
-        raise subprocess.TimeoutExpired(command, timeout, output=stdout)
+        if os.name == "posix":
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        else:
+            process.kill()
+
+        # Reap only the process we started. A detached descendant may still hold
+        # stdout open, so calling communicate() again could block past the timeout.
+        process.wait()
+
+        if process.stdout is not None:
+            process.stdout.close()
+
+        raise
+
     return subprocess.CompletedProcess(command, process.returncode, stdout=stdout)

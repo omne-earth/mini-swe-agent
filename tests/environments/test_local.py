@@ -262,3 +262,53 @@ def test_local_environment_shell_features():
     result = env.execute({"command": "echo $(echo 'nested')"})
     assert result["returncode"] == 0
     assert "nested" in result["output"]
+
+@pytest.mark.skipif(os.name == "nt", reason="process groups are POSIX-specific")
+def test_local_environment_timeout_does_not_wait_for_detached_descendant():
+    """A detached descendant must not extend the configured command timeout."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        detached_pid_file = Path(temp_dir) / "detached.pid"
+        script = Path(temp_dir) / "spawn_detached.py"
+
+        script.write_text(
+            "\n".join(
+                [
+                    "import subprocess",
+                    "import sys",
+                    "import time",
+                    "from pathlib import Path",
+                    'print("outer-start", flush=True)',
+                    (
+                        "child = subprocess.Popen("
+                        "[sys.executable, '-c', 'import time; time.sleep(30)'], "
+                        "start_new_session=True"
+                        ")"
+                    ),
+                    "Path(sys.argv[1]).write_text(str(child.pid))",
+                    "time.sleep(30)",
+                ]
+            )
+        )
+
+        env = LocalEnvironment(timeout=1)
+
+        try:
+            started = time.monotonic()
+            result = env.execute(
+                {
+                    "command": (
+                        f"{shlex.quote(sys.executable)} "
+                        f"{shlex.quote(str(script))} "
+                        f"{shlex.quote(str(detached_pid_file))}"
+                    )
+                }
+            )
+            elapsed = time.monotonic() - started
+
+            assert result["returncode"] == -1
+            assert result["extra"]["exception_type"] == "TimeoutExpired"
+            assert "outer-start" in result["output"]
+            assert elapsed < 3
+        finally:
+            if detached_pid_file.exists():
+                _kill_process_if_running(int(detached_pid_file.read_text()))
