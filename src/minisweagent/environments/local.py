@@ -2,6 +2,7 @@ import os
 import platform
 import signal
 import subprocess
+import traceback
 from typing import Any
 
 from pydantic import BaseModel
@@ -25,6 +26,7 @@ class LocalEnvironment:
         """Execute a command in the local environment and return the result as a dict."""
         command = action.get("command", "")
         cwd = cwd or self.config.cwd or os.getcwd()
+
         try:
             result = _run(command, cwd, os.environ | self.config.env, timeout or self.config.timeout)
             output = {"output": result.stdout, "returncode": result.returncode, "exception_info": ""}
@@ -33,12 +35,23 @@ class LocalEnvironment:
             raw_output = (
                 raw_output.decode("utf-8", errors="replace") if isinstance(raw_output, bytes) else (raw_output or "")
             )
+
+            if isinstance(e, subprocess.TimeoutExpired):
+                exception_info = (
+                    f"{traceback.format_exc(limit=1).strip()}\n"
+                    "The command timed out. Try a shorter command, split it into smaller steps, "
+                    "or explicitly bound long-running subprocesses before retrying."
+                )
+            else:
+                exception_info = f"An error occurred while executing the command: {e}"
+
             output = {
                 "output": raw_output,
                 "returncode": -1,
-                "exception_info": f"An error occurred while executing the command: {e}",
+                "exception_info": exception_info,
                 "extra": {"exception_type": type(e).__name__, "exception": str(e)},
             }
+
         self._check_finished(output)
         return output
 
@@ -86,7 +99,21 @@ def _run(command: str, cwd: str, env: dict[str, str], timeout: int) -> subproces
     try:
         stdout, _ = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL) if os.name == "posix" else process.kill()
-        stdout, _ = process.communicate()
-        raise subprocess.TimeoutExpired(command, timeout, output=stdout)
+        if os.name == "posix":
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        else:
+            process.kill()
+
+        # Reap only the process we started. A detached descendant may still hold
+        # stdout open, so calling communicate() again could block past the timeout.
+        process.wait()
+
+        if process.stdout is not None:
+            process.stdout.close()
+
+        raise
+
     return subprocess.CompletedProcess(command, process.returncode, stdout=stdout)
