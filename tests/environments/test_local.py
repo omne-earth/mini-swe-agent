@@ -308,6 +308,9 @@ def test_local_environment_timeout_does_not_wait_for_detached_descendant():
             assert result["returncode"] == -1
             assert result["extra"]["exception_type"] == "TimeoutExpired"
             assert "outer-start" in result["output"]
+            assert "TimeoutExpired" in result["exception_info"]
+            assert result["exception_info"].count('File "') == 1
+            assert "Try a shorter command" in result["exception_info"]
             assert elapsed < 3
         finally:
             if detached_pid_file.exists():
