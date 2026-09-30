@@ -117,12 +117,20 @@ class DefaultAgent:
     def prune_resumed_messages(messages: list[dict]) -> list[dict]:
         """Cut a saved message list back to the last complete step.
 
-        The list must end on an observation (a user message): everything
-        after it -- an unanswered assistant message, an exit marker -- is
-        dropped, so the next model query is a legal continuation.
+        The list must end on an observation: everything after it -- an
+        unanswered assistant message, an exit marker -- is dropped, so
+        the next model query is a legal continuation. An observation is
+        format-dependent: a user message (text format), a tool message
+        (toolcall format), or a function_call_output item (response API).
         """
+
+        def is_observation(msg: dict) -> bool:
+            if msg.get("type") == "function_call_output":
+                return True
+            return msg.get("role") in ("user", "tool")
+
         pruned = list(messages)
-        while pruned and pruned[-1].get("role") != "user":
+        while pruned and not is_observation(pruned[-1]):
             pruned.pop()
         if len(pruned) < 2:
             raise ValueError(
