@@ -597,3 +597,30 @@ def test_prune_resumed_messages_drops_the_incomplete_tail():
 def test_prune_resumed_messages_refuses_an_empty_leg():
     with pytest.raises(ValueError, match="too short to resume"):
         DefaultAgent.prune_resumed_messages([{"role": "system", "content": "s"}])
+
+
+def test_prune_resumed_messages_keeps_toolcall_observations():
+    # Toolcall-format observations are role "tool", response-API ones are
+    # function_call_output items: neither must be pruned away -- popping
+    # back to a *user* message would eat the whole run and turn a resume
+    # into a silent restart.
+    messages = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "step 1", "tool_calls": [{"id": "c1"}]},
+        {"role": "tool", "content": "observation 1", "tool_call_id": "c1"},
+        {"role": "assistant", "content": "unanswered"},
+        {"role": "exit", "content": "TimeExceeded"},
+    ]
+    pruned = DefaultAgent.prune_resumed_messages(messages)
+    assert [m["role"] for m in pruned] == ["system", "user", "assistant", "tool"]
+
+    response_api = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "task"},
+        {"object": "response", "content": "step 1"},
+        {"type": "function_call_output", "output": "observation 1"},
+        {"object": "response", "content": "unanswered"},
+    ]
+    pruned = DefaultAgent.prune_resumed_messages(response_api)
+    assert pruned[-1]["type"] == "function_call_output" and len(pruned) == 4
