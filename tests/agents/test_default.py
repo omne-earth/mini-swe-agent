@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import json
 import pytest
 import yaml
 
@@ -542,3 +543,57 @@ def test_format_errors_count_against_cost_limit(toolcall_config, reset_global_st
     assert agent.n_calls == 3
     assert agent.cost == 3.0
     assert agent.cost == GLOBAL_MODEL_STATS.cost
+
+
+# --- Resume ---
+
+
+def test_resume_continues_a_saved_trajectory(model_factory, tmp_path):
+    """A trajectory cut mid-run resumes: pruned to the last observation,
+    counters carried, and the loop continues to a normal exit."""
+    factory, config = model_factory
+    output_path = tmp_path / "traj.json"
+    first_leg = DefaultAgent(
+        model=factory([("I'll echo a message", [{"command": "echo 'hello world'"}])]),
+        env=LocalEnvironment(),
+        **{**config, "output_path": output_path, "step_limit": 1},
+    )
+    info = first_leg.run("Echo hello world then finish")
+    assert info["exit_status"] == "LimitsExceeded"  # the cut leg
+    trajectory = json.loads(output_path.read_text())
+
+    second_leg = DefaultAgent(
+        model=factory(
+            [
+                (
+                    "Now finishing",
+                    [{"command": "echo 'COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT'\necho 'Task completed successfully'"}],
+                ),
+            ]
+        ),
+        env=LocalEnvironment(),
+        **{**config, "step_limit": 3},
+    )
+    info = second_leg.resume(trajectory, "Echo hello world then finish")
+    assert info["exit_status"] == "Submitted"
+    assert info["submission"] == "Task completed successfully\n"
+    # The first leg's call carried over: exit messages and the counter agree.
+    assert second_leg.n_calls == 2
+
+
+def test_prune_resumed_messages_drops_the_incomplete_tail():
+    messages = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "step 1"},
+        {"role": "user", "content": "observation 1"},
+        {"role": "assistant", "content": "unanswered"},
+        {"role": "exit", "content": "TimeExceeded"},
+    ]
+    pruned = DefaultAgent.prune_resumed_messages(messages)
+    assert [m["role"] for m in pruned] == ["system", "user", "assistant", "user"]
+
+
+def test_prune_resumed_messages_refuses_an_empty_leg():
+    with pytest.raises(ValueError, match="too short to resume"):
+        DefaultAgent.prune_resumed_messages([{"role": "system", "content": "s"}])
