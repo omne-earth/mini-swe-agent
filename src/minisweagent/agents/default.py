@@ -93,6 +93,44 @@ class DefaultAgent:
             self.model.format_message(role="system", content=self._render_template(self.config.system_template)),
             self.model.format_message(role="user", content=self._render_template(self.config.instance_template)),
         )
+        return self._loop()
+
+    def resume(self, trajectory: dict, task: str = "", **kwargs) -> dict:
+        """Continue a saved trajectory as if it were the same run.
+
+        The messages are pruned back to the last observation (a trailing
+        assistant message may describe actions that never fully executed;
+        a trailing exit message belongs to the previous leg's ending), the
+        cost and call counters carry over, and the loop re-enters exactly
+        where a fresh step would have started. The wall-clock budget is
+        this leg's own: it starts at construction time as usual.
+        """
+        stats = trajectory.get("info", {}).get("model_stats", {})
+        self.cost = float(stats.get("instance_cost") or 0.0)
+        self.n_calls = int(stats.get("api_calls") or 0)
+        self.extra_template_vars |= {"task": task, **kwargs}
+        self.messages = []
+        self.add_messages(*self.prune_resumed_messages(trajectory.get("messages", [])))
+        return self._loop()
+
+    @staticmethod
+    def prune_resumed_messages(messages: list[dict]) -> list[dict]:
+        """Cut a saved message list back to the last complete step.
+
+        The list must end on an observation (a user message): everything
+        after it -- an unanswered assistant message, an exit marker -- is
+        dropped, so the next model query is a legal continuation.
+        """
+        pruned = list(messages)
+        while pruned and pruned[-1].get("role") != "user":
+            pruned.pop()
+        if len(pruned) < 2:
+            raise ValueError(
+                "trajectory too short to resume: no complete step survived pruning"
+            )
+        return pruned
+
+    def _loop(self) -> dict:
         while True:
             try:
                 self.step()

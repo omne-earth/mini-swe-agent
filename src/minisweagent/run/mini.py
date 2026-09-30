@@ -3,6 +3,7 @@
 """Run mini-SWE-agent in your local environment. This is the default executable `mini`."""
 # Read this first: https://mini-swe-agent.com/latest/usage/mini/  (usage)
 
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -62,10 +63,15 @@ def main(
     cost_limit: float | None = typer.Option(None, "-l", "--cost-limit", help="Cost limit. Set to 0 to disable."),
     config_spec: list[str] = typer.Option([str(DEFAULT_CONFIG_FILE)], "-c", "--config", help=_CONFIG_SPEC_HELP_TEXT),
     output: Path | None = typer.Option(DEFAULT_OUTPUT_FILE, "-o", "--output", help="Output trajectory file"),
+    resume: Path | None = typer.Option(None, "--resume", help="Resume from a saved trajectory file: its messages are pruned back to the last observation and the run continues as the same leg.", rich_help_panel="Advanced"),
     exit_immediately: bool = typer.Option(False, "--exit-immediately", help="Exit immediately when the agent wants to finish instead of prompting.", rich_help_panel="Advanced"),
 ) -> Any:
     # fmt: on
     configure_if_first_time()
+
+    # Tests call main() directly, so an unset option arrives as typer's
+    # OptionInfo sentinel rather than None.
+    resume = Path(resume) if isinstance(resume, (str, Path)) else None
 
     # Build the config from the command line arguments
     console.print(f"Building agent config from specs: [bold green]{config_spec}[/bold green]")
@@ -92,14 +98,22 @@ def main(
     config = recursive_merge(*configs)
 
     if (run_task := config.get("run", {}).get("task", UNSET)) is UNSET:
-        console.print("[bold yellow]What do you want to do?")
-        run_task = _multiline_prompt()
-        console.print("[bold green]Got that, thanks![/bold green]")
+        if resume is not None:
+            run_task = ""  # the task already lives in the resumed messages
+        else:
+            console.print("[bold yellow]What do you want to do?")
+            run_task = _multiline_prompt()
+            console.print("[bold green]Got that, thanks![/bold green]")
 
     model = get_model(config=config.get("model", {}))
     env = get_environment(config.get("environment", {}), default_type="local")
     agent = get_agent(model, env, config.get("agent", {}), default_type="interactive")
-    agent.run(run_task)
+    if resume is not None:
+        trajectory = json.loads(resume.read_text())
+        console.print(f"Resuming trajectory from [bold green]'{resume}'[/bold green]")
+        agent.resume(trajectory, run_task)
+    else:
+        agent.run(run_task)
     if (output_path := config.get("agent", {}).get("output_path")):
         console.print(f"Saved trajectory to [bold green]'{output_path}'[/bold green]")
     return agent
