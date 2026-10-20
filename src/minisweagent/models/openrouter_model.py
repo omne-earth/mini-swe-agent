@@ -5,7 +5,7 @@ import time
 from typing import Any, Literal
 
 import requests
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from minisweagent.exceptions import FormatError
 from minisweagent.models import GLOBAL_MODEL_STATS
@@ -38,6 +38,8 @@ class OpenRouterModelConfig(BaseModel):
     """Template used to render the observation after executing an action."""
     multimodal_regex: str = ""
     """Regex to extract multimodal content. Empty string disables multimodal processing."""
+    http_timeout: float = Field(default=60, gt=0)
+    """Timeout in seconds for each HTTP request to the OpenRouter API."""
 
 
 class OpenRouterAPIError(Exception):
@@ -75,7 +77,9 @@ class OpenRouterModel:
         }
 
         try:
-            response = requests.post(self._api_url, headers=headers, data=json.dumps(payload), timeout=60)
+            response = requests.post(
+                self._api_url, headers=headers, data=json.dumps(payload), timeout=self.config.http_timeout
+            )
             response.raise_for_status()
             return response.json()
         except requests.exceptions.HTTPError as e:

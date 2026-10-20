@@ -43,7 +43,9 @@ class OpenRouterTextbasedModel(OpenRouterModel):
         }
 
         try:
-            response = requests.post(self._api_url, headers=headers, data=json.dumps(payload), timeout=60)
+            response = requests.post(
+                self._api_url, headers=headers, data=json.dumps(payload), timeout=self.config.http_timeout
+            )
             response.raise_for_status()
             return response.json()
         except requests.exceptions.HTTPError as e:
