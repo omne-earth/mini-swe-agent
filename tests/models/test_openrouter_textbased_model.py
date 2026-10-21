@@ -4,10 +4,15 @@ from unittest.mock import Mock, patch
 
 import pytest
 import requests
+from pydantic import ValidationError
 
 from minisweagent.models import GLOBAL_MODEL_STATS
 from minisweagent.models.openrouter_model import (
     OpenRouterAuthenticationError,
+    OpenRouterModel,
+)
+from minisweagent.models.openrouter_response_model import (
+    OpenRouterResponseModel,
 )
 from minisweagent.models.openrouter_textbased_model import (
     OpenRouterTextbasedModel,
@@ -199,3 +204,32 @@ def test_openrouter_model_no_api_key():
 
             with pytest.raises(OpenRouterAuthenticationError):
                 model._query(messages)
+
+
+@pytest.mark.parametrize(
+    ("model_cls", "config", "expected_timeout"),
+    [
+        (OpenRouterModel, {}, 60),
+        (OpenRouterModel, {"http_timeout": 240}, 240),
+        (OpenRouterTextbasedModel, {}, 60),
+        (OpenRouterTextbasedModel, {"http_timeout": 240}, 240),
+        (OpenRouterResponseModel, {"http_timeout": 240}, 240),
+    ],
+)
+def test_openrouter_http_timeout_reaches_request(model_cls, config, expected_timeout):
+    """The configured http_timeout (default 60) is the timeout handed to requests.post."""
+    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        model = model_cls(model_name="anthropic/claude-3.5-sonnet", **config)
+        with patch("requests.post") as mock_post:
+            mock_post.return_value.status_code = 200
+            mock_post.return_value.json.return_value = {"choices": []}
+            mock_post.return_value.raise_for_status.return_value = None
+            model._query([{"role": "user", "content": "hi"}])
+            assert mock_post.call_args.kwargs["timeout"] == expected_timeout
+
+
+@pytest.mark.parametrize("bad_timeout", [0, -1, -240])
+def test_openrouter_http_timeout_rejects_non_positive(bad_timeout):
+    """A non-positive http_timeout is rejected at config construction, not silently used."""
+    with pytest.raises(ValidationError):
+        OpenRouterModel(model_name="anthropic/claude-3.5-sonnet", http_timeout=bad_timeout)
